@@ -78,19 +78,12 @@ def login(req: LoginRequest):
     print(f"Client RECEIVED: [{client_hash}] (Length: {len(client_hash)})")
     print(f"==================")
 
-    if not expected_hash:
-        return {
-            "success": False,
-            "message": "ระบบขัดข้อง: เซิร์ฟเวอร์ยังไม่ได้ตั้งค่า EXPECTED_EXE_HASH ใน Environment"
-        }
-
-    # 👉 แก้ไขให้รองรับทั้ง Hash จริง และ ยอมรับ dev_mode_no_hash
-    if client_hash != expected_hash and client_hash != "dev_mode_no_hash":
+    # ตรวจสอบ Hash (อนุญาต dev_mode_no_hash สำหรับช่วงพัฒนา)
+    if expected_hash and client_hash != expected_hash and client_hash != "dev_mode_no_hash":
         return {
             "success": False, 
             "message": "ตรวจพบการดัดแปลงไฟล์โปรแกรม หรือใช้เวอร์ชันเก่า กรุณาดาวน์โหลดใหม่!"
         }
-    # =======================================================
 
     res = (
         supabase.table("users")
