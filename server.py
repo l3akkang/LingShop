@@ -94,7 +94,8 @@ def login(req: LoginRequest):
     expected_hash = EXPECTED_EXE_HASH.strip().lower()
     client_hash = req.exe_hash.strip().lower()
 
-    if expected_hash and client_hash != expected_hash and client_hash != "dev_mode_no_hash":
+    # 🚨 แก้ไขแล้ว: ลบการข้อยกเว้น dev_mode_no_hash บังคับเช็ค 100%
+    if expected_hash and client_hash != expected_hash:
         return {"success": False, "message": "เวอร์ชันโปรแกรมไม่ถูกต้อง กรุณาอัปเดต"}
 
     res = (
