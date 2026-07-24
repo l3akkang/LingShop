@@ -12,6 +12,8 @@ app = FastAPI()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+# เพิ่มตัวแปรสำหรับเช็ก Hash ของไฟล์ .exe (ดึงจาก .env)
+EXPECTED_EXE_HASH = os.getenv("EXPECTED_EXE_HASH", "")
 
 try:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -25,6 +27,7 @@ class LoginRequest(BaseModel):
     username: str
     password: str  
     hwid: str
+    exe_hash: str  # <- เพิ่มบรรทัดนี้เพื่อให้รับค่า Hash จากฝั่ง Client
 
 class RegisterRequest(BaseModel):
     username: str
@@ -67,6 +70,16 @@ def register(req: RegisterRequest):
 def login(req: LoginRequest):
     if not supabase:
         raise HTTPException(status_code=500, detail="Database error")
+
+    # === ระบบตรวจสอบ EXE Hash ===
+    if EXPECTED_EXE_HASH:
+        # ถ้าไม่ได้รันผ่าน Python สดๆ (ไม่ใช่ DEV_MODE) และ Hash ไม่ตรงกัน
+        if req.exe_hash != "DEV_MODE_NO_HASH" and req.exe_hash != EXPECTED_EXE_HASH:
+            return {
+                "success": False, 
+                "message": "ตรวจพบการดัดแปลงไฟล์โปรแกรม หรือใช้เวอร์ชันเก่า กรุณาดาวน์โหลดใหม่!"
+            }
+    # ==========================
 
     res = (
         supabase.table("users")
