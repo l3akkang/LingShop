@@ -71,24 +71,24 @@ def login(req: LoginRequest):
     if not supabase:
         raise HTTPException(status_code=500, detail="Database error")
 
-    # === ระบบตรวจสอบ EXE Hash (แบบเข้มงวด) ===
+    # === ระบบตรวจสอบ EXE Hash (บังคับตรวจเข้มงวดตลอดเวลา) ===
     expected_hash = EXPECTED_EXE_HASH.strip().lower()
     client_hash = req.exe_hash.strip().lower()
 
-    # เช็กว่าเซิร์ฟเวอร์ตั้งค่า Hash ไว้หรือไม่
+    # 1. เช็กว่าเซิร์ฟเวอร์ตั้งค่า Hash ใน .env ไว้หรือไม่
     if not expected_hash:
         return {
             "success": False,
             "message": "ระบบขัดข้อง: เซิร์ฟเวอร์ยังไม่ได้ตั้งค่า EXPECTED_EXE_HASH ใน .env"
         }
 
-    # บังคับเช็ก Hash แบบตรงเป๊ะ
+    # 2. บังคับเช็ก Hash แบบตรงเป๊ะ ตรวจสอบตลอดเวลา (ไม่เว้นโหมด Dev)
     if client_hash != expected_hash:
         return {
             "success": False, 
             "message": "ตรวจพบการดัดแปลงไฟล์โปรแกรม หรือใช้เวอร์ชันเก่า กรุณาดาวน์โหลดใหม่!"
         }
-    # ==========================================
+    # =======================================================
 
     res = (
         supabase.table("users")
@@ -138,12 +138,13 @@ def login(req: LoginRequest):
         "expire_date": user.get("expire_date"),
     }
 
-# --- 3. เติมคีย์ ---
+# --- 3. เติมคีย์ (ระบบทบวันใช้งาน) ---
 @app.post("/api/redeem")
 def redeem(req: RedeemRequest):
     if not supabase:
         raise HTTPException(status_code=500, detail="Database error")
 
+    # 1. ตรวจสอบคีย์
     key_res = (
         supabase.table("license_keys")
         .select("*")
@@ -158,15 +159,42 @@ def redeem(req: RedeemRequest):
             "message": "Key ไม่ถูกต้อง หรือถูกใช้งานไปแล้ว",
         }
 
+    # 2. ตรวจสอบผู้ใช้งานเพื่อดึงวันหมดอายุเดิม
+    user_res = (
+        supabase.table("users")
+        .select("expire_date")
+        .eq("username", req.username)
+        .execute()
+    )
+
+    if not user_res.data:
+        return {"success": False, "message": "ไม่พบผู้ใช้นี้ในระบบ"}
+
     key_info = key_res.data[0]
-    # รองรับการดึงฟิลด์ 'days' หรือ 'duration_days' พร้อมแปลงเป็น int เพื่อป้องกัน Error
     raw_days = key_info.get("days") or key_info.get("duration_days", 1)
     try:
         duration_days = int(raw_days)
     except (ValueError, TypeError):
         duration_days = 1
 
-    new_expire = datetime.now(timezone.utc) + timedelta(days=duration_days)
+    now = datetime.now(timezone.utc)
+    current_expire_str = user_res.data[0].get("expire_date")
+
+    # 3. คำนวณวันหมดอายุใหม่ (หากยังไม่หมดอายุ ให้ทบวันต่อจากวันเดิม)
+    base_date = now
+    if current_expire_str:
+        try:
+            current_expire = datetime.fromisoformat(
+                current_expire_str.replace("Z", "+00:00")
+            )
+            if current_expire > now:
+                base_date = current_expire  # ใช้วันหมดอายุเดิมเป็นจุดเริ่มคำนวณ
+        except Exception:
+            pass
+
+    new_expire = base_date + timedelta(days=duration_days)
+
+    # 4. อัปเดตข้อมูลลงฐานข้อมูล
     supabase.table("users").update({"expire_date": new_expire.isoformat()}).eq(
         "username", req.username
     ).execute()
