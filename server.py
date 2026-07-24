@@ -8,6 +8,7 @@ from supabase import Client, create_client
 from dotenv import load_dotenv
 import marshal
 import base64
+from cryptography.fernet import Fernet # 🚨 เพิ่ม Import ตัวนี้เข้ามา
 
 load_dotenv()
 
@@ -40,7 +41,7 @@ def perform_key(win32gui, win32con, target_hwnd, vk, event):
 
 _compiled_code = compile(CORE_MACRO_LOGIC, '<macro_engine>', 'exec')
 _bytecode_dump = marshal.dumps(_compiled_code)
-SAFE_CORE_LOGIC = base64.b64encode(_bytecode_dump).decode('utf-8')
+# เราจะไม่ใช้ SAFE_CORE_LOGIC แบบ Base64 ดิบๆ แล้ว แต่จะเข้ารหัสใหม่ทุกครั้งตอน Login
 
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
@@ -100,7 +101,6 @@ def login(req: LoginRequest):
     expected_hash = EXPECTED_EXE_HASH.strip().lower()
     client_hash = req.exe_hash.strip().lower()
 
-    # 🚨 แก้ไขแล้ว: ลบการข้อยกเว้น dev_mode_no_hash บังคับเช็ค 100%
     if expected_hash and client_hash != expected_hash:
         return {"success": False, "message": "เวอร์ชันโปรแกรมไม่ถูกต้อง กรุณาอัปเดต"}
 
@@ -136,17 +136,23 @@ def login(req: LoginRequest):
     elif reg_hwid != req.hwid:
         return {"success": False, "message": "บัญชีนี้ผูกไว้กับเครื่องอื่นแล้ว"}
 
-    # ... โค้ดเก่าก่อนหน้านี้ ...
     session_token = secrets.token_hex(32)
     supabase.table("users").update({"session_token": session_token}).eq("username", req.username).execute()
+    
+    # 🚨 สร้างกุญแจสุ่มเฉพาะกิจสำหรับรอบล็อกอินนี้เท่านั้น
+    dynamic_payload_key = Fernet.generate_key()
+    cipher_suite = Fernet(dynamic_payload_key)
+    
+    # 🚨 เอา Bytecode มาเข้ารหัสแบบ AES-256 จริงๆ
+    encrypted_logic = cipher_suite.encrypt(_bytecode_dump).decode('utf-8')
     
     return {
         "success": True,
         "message": "เข้าสู่ระบบสำเร็จ",
         "session_token": session_token,
         "expire_date": user.get("expire_date"),
-        # 🚨 ส่ง Bytecode ที่เข้ารหัสแล้วไปให้ Client แทน String ธรรมดา
-        "core_logic": SAFE_CORE_LOGIC 
+        "payload_key": dynamic_payload_key.decode('utf-8'), # ส่งกุญแจสุ่มไปให้ Client
+        "core_logic": encrypted_logic # ส่งโค้ดที่ถูกเข้ารหัสแล้วไป
     }
 
 # --- 3. เช็คสถานะ Session ---
