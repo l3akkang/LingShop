@@ -6,6 +6,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from supabase import Client, create_client
 from dotenv import load_dotenv
+import marshal
+import base64
 
 load_dotenv()
 
@@ -35,6 +37,10 @@ def perform_key(win32gui, win32con, target_hwnd, vk, event):
     elif event == 'up':
         win32gui.PostMessage(target_hwnd, win32con.WM_KEYUP, vk, 0)
 """
+
+_compiled_code = compile(CORE_MACRO_LOGIC, '<macro_engine>', 'exec')
+_bytecode_dump = marshal.dumps(_compiled_code)
+SAFE_CORE_LOGIC = base64.b64encode(_bytecode_dump).decode('utf-8')
 
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
@@ -130,6 +136,7 @@ def login(req: LoginRequest):
     elif reg_hwid != req.hwid:
         return {"success": False, "message": "บัญชีนี้ผูกไว้กับเครื่องอื่นแล้ว"}
 
+    # ... โค้ดเก่าก่อนหน้านี้ ...
     session_token = secrets.token_hex(32)
     supabase.table("users").update({"session_token": session_token}).eq("username", req.username).execute()
     
@@ -138,7 +145,8 @@ def login(req: LoginRequest):
         "message": "เข้าสู่ระบบสำเร็จ",
         "session_token": session_token,
         "expire_date": user.get("expire_date"),
-        "core_logic": CORE_MACRO_LOGIC
+        # 🚨 ส่ง Bytecode ที่เข้ารหัสแล้วไปให้ Client แทน String ธรรมดา
+        "core_logic": SAFE_CORE_LOGIC 
     }
 
 # --- 3. เช็คสถานะ Session ---
