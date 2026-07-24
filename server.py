@@ -39,10 +39,6 @@ def perform_key(win32gui, win32con, target_hwnd, vk, event):
         win32gui.PostMessage(target_hwnd, win32con.WM_KEYUP, vk, 0)
 """
 
-_compiled_code = compile(CORE_MACRO_LOGIC, '<macro_engine>', 'exec')
-_bytecode_dump = marshal.dumps(_compiled_code)
-# เราจะไม่ใช้ SAFE_CORE_LOGIC แบบ Base64 ดิบๆ แล้ว แต่จะเข้ารหัสใหม่ทุกครั้งตอน Login
-
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
 
@@ -143,8 +139,8 @@ def login(req: LoginRequest):
     dynamic_payload_key = Fernet.generate_key()
     cipher_suite = Fernet(dynamic_payload_key)
     
-    # 🚨 เอา Bytecode มาเข้ารหัสแบบ AES-256 จริงๆ
-    encrypted_logic = cipher_suite.encrypt(_bytecode_dump).decode('utf-8')
+    # 🚨 เอา Text โค้ดดิบๆ มาเข้ารหัสเลย ไม่ต้องผ่าน marshal
+    encrypted_logic = cipher_suite.encrypt(CORE_MACRO_LOGIC.encode('utf-8')).decode('utf-8')
     
     return {
         "success": True,
