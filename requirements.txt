@@ -54,6 +54,7 @@ PyScreeze==1.0.1
 pyserial==3.5
 python-dotenv==1.2.2
 pytweening==1.2.0
+pywin32==312
 pywin32-ctypes==0.2.3
 realtime==2.31.0
 requests==2.34.2
@@ -74,3 +75,4 @@ websockets==15.0.1
 wheel==0.47.0
 wrapt==2.2.2
 yarl==1.24.5
+zstandard==0.25.0
