@@ -54,7 +54,6 @@ PyScreeze==1.0.1
 pyserial==3.5
 python-dotenv==1.2.2
 pytweening==1.2.0
-pywin32==312
 pywin32-ctypes==0.2.3
 realtime==2.31.0
 requests==2.34.2
