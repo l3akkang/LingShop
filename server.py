@@ -2,7 +2,7 @@ import os
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from supabase import Client, create_client
 from dotenv import load_dotenv
@@ -13,7 +13,7 @@ app = FastAPI()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-EXPECTED_EXE_HASH = os.getenv("EXPECTED_EXE_HASH", "").strip().lower()
+EXPECTED_EXE_HASH = os.getenv("EXPECTED_EXE_HASH", "")
 
 try:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -29,9 +29,10 @@ class LoginRequest(BaseModel):
     hwid: str
     exe_hash: str
 
-class HeartbeatRequest(BaseModel):
+class VerifySessionRequest(BaseModel):
     username: str
     hwid: str
+    session_token: str
 
 class RegisterRequest(BaseModel):
     username: str
@@ -41,66 +42,77 @@ class RedeemRequest(BaseModel):
     username: str
     key_code: str
 
+# --- 1. ระบบสมัครสมาชิก (Register) ---
 @app.post("/api/register")
 def register(req: RegisterRequest):
     if not supabase:
         raise HTTPException(status_code=500, detail="Database connection error")
+
     if not req.username or not req.password:
-        return {"success": False, "message": "กรุณากรอกข้อมูลให้ครบถ้วน"}
+        return {"success": False, "message": "กรุณากรอก Username และ Password ให้ครบถ้วน"}
 
     res = supabase.table("users").select("username").eq("username", req.username).execute()
     if res.data:
-        return {"success": False, "message": "Username ถูกใช้งานแล้ว"}
+        return {"success": False, "message": "Username นี้ถูกใช้งานไปแล้ว"}
+
+    hashed_pwd = hash_password(req.password)
 
     try:
         data = {
             "username": req.username,
-            "password_hash": hash_password(req.password),
+            "password_hash": hashed_pwd,
             "hwid": "EMPTY",
             "expire_date": None
         }
         supabase.table("users").insert(data).execute()
-        return {"success": True, "message": "สมัครสมาชิกสำเร็จ!"}
+        return {"success": True, "message": "สมัครสมาชิกสำเร็จ! กรุณาเติม Serial Key ก่อนเข้าใช้งาน"}
     except Exception as e:
-        return {"success": False, "message": f"เกิดข้อผิดพลาด: {str(e)}"}
+        return {"success": False, "message": f"ไม่สามารถสร้างบัญชีได้: {str(e)}"}
 
+# --- 2. ระบบเข้าสู่ระบบ (Login) ---
 @app.post("/api/login")
 def login(req: LoginRequest):
     if not supabase:
         raise HTTPException(status_code=500, detail="Database connection error")
 
-    # Anti-Tamper Check Hash
+    expected_hash = EXPECTED_EXE_HASH.strip().lower()
     client_hash = req.exe_hash.strip().lower()
-    if EXPECTED_EXE_HASH and client_hash != EXPECTED_EXE_HASH and client_hash != "dev_mode_no_hash":
-        return {"success": False, "message": "เวอร์ชันโปรแกรมไม่ถูกต้อง"}
 
-    res = supabase.table("users").select("password_hash", "expire_date", "hwid").eq("username", req.username).execute()
+    if expected_hash and client_hash != expected_hash and client_hash != "dev_mode_no_hash":
+        return {"success": False, "message": "เวอร์ชันโปรแกรมไม่ถูกต้อง กรุณาอัปเดต"}
+
+    res = (
+        supabase.table("users")
+        .select("password_hash", "expire_date", "hwid")
+        .eq("username", req.username)
+        .execute()
+    )
     if not res.data:
-        return {"success": False, "message": "ไม่พบผู้ใช้งาน"}
+        return {"success": False, "message": "ไม่พบผู้ใช้งานในระบบ"}
 
     user = res.data[0]
+
     if user["password_hash"] != hash_password(req.password):
         return {"success": False, "message": "รหัสผ่านไม่ถูกต้อง"}
 
     expire_str = user.get("expire_date")
+
     if not expire_str:
-        return {"success": False, "message": "บัญชีนี้ยังไม่ได้เติม Serial Key"}
+        return {"success": False, "message": "บัญชีนี้ยังไม่ได้เติม Serial Key กรุณาไปที่แท็บ Activate Key ก่อน"}
 
     try:
         expire_dt = datetime.fromisoformat(expire_str.replace("Z", "+00:00"))
         if datetime.now(timezone.utc) > expire_dt:
-            return {"success": False, "message": "เวลาการใช้งานหมดอายุแล้ว"}
+            return {"success": False, "message": "เวลาการใช้งานของคุณหมดอายุแล้ว กรุณาเติม Key เพิ่ม"}
     except Exception:
-        return {"success": False, "message": "รูปแบบวันที่ไม่ถูกต้อง"}
+        return {"success": False, "message": "รูปแบบวันที่ในระบบไม่ถูกต้อง"}
 
-    # HWID Binding
     reg_hwid = user.get("hwid")
     if not reg_hwid or reg_hwid in ["EMPTY", "UNKNOWN_DEVICE"]:
         supabase.table("users").update({"hwid": req.hwid}).eq("username", req.username).execute()
     elif reg_hwid != req.hwid:
         return {"success": False, "message": "บัญชีนี้ผูกไว้กับเครื่องอื่นแล้ว"}
 
-    # Dynamic Session Token Generation
     session_token = secrets.token_hex(32)
     supabase.table("users").update({"session_token": session_token}).eq("username", req.username).execute()
     
@@ -111,35 +123,35 @@ def login(req: LoginRequest):
         "expire_date": user.get("expire_date")
     }
 
-@app.post("/api/heartbeat")
-def heartbeat(req: HeartbeatRequest, x_session_token: str = Header(None)):
-    """Heartbeat สั้นลง รับ Token ผ่าน Header เพื่อความปลอดภัย"""
-    if not supabase or not x_session_token:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+# --- 3. เช็คสถานะ Session ---
+@app.post("/api/verify_session")
+def verify_session(req: VerifySessionRequest):
+    if not supabase:
+        return {"active": False}
 
     res = supabase.table("users").select("expire_date", "hwid", "session_token").eq("username", req.username).execute()
     if not res.data:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+        return {"active": False}
     
     user = res.data[0]
-    if user.get("hwid") != req.hwid or user.get("session_token") != x_session_token:
-        raise HTTPException(status_code=401, detail="Unauthorized Target")
+    
+    if user.get("hwid") != req.hwid or user.get("session_token") != req.session_token:
+        return {"active": False}
         
     expire_str = user.get("expire_date")
     if not expire_str:
-        raise HTTPException(status_code=401, detail="Expired")
+        return {"active": False}
 
     try:
         expire_dt = datetime.fromisoformat(expire_str.replace("Z", "+00:00"))
         if datetime.now(timezone.utc) > expire_dt:
-            raise HTTPException(status_code=401, detail="Expired")
+            return {"active": False}
     except Exception:
-        raise HTTPException(status_code=401, detail="Invalid Expiry")
+        return {"active": False}
 
-    # ส่ง Signature ยืนยันความถูกต้องกลับไป
-    sync_sig = hashlib.sha256(f"{req.username}:{x_session_token}:{datetime.now(timezone.utc).minute}".encode()).hexdigest()
-    return {"status": "alive", "sync_sig": sync_sig}
+    return {"active": True}
 
+# --- 4. ระบบเติม Serial Key (Redeem) --- [แก้ชื่อตารางเป็น license_keys แล้ว!]
 @app.post("/api/redeem")
 def redeem_key(req: RedeemRequest):
     if not supabase:
@@ -147,11 +159,12 @@ def redeem_key(req: RedeemRequest):
 
     user_res = supabase.table("users").select("expire_date").eq("username", req.username).execute()
     if not user_res.data:
-        return {"success": False, "message": "ไม่พบ Username นี้"}
+        return {"success": False, "message": "ไม่พบ Username นี้ในระบบ"}
 
+    # 🟢 ตรงนี้แก้เป็น license_keys ให้ตรงกับ Supabase แล้ว!
     key_res = supabase.table("license_keys").select("*").eq("key_code", req.key_code).eq("is_used", False).execute()
     if not key_res.data:
-        return {"success": False, "message": "Serial Key ไม่ถูกต้อง หรือถูกใช้ไปแล้ว"}
+        return {"success": False, "message": "Serial Key ไม่ถูกต้อง หรือถูกใช้งานไปแล้ว"}
 
     key_info = key_res.data[0]
     days_to_add = key_info.get("days", 30)
@@ -170,6 +183,7 @@ def redeem_key(req: RedeemRequest):
 
     new_expire = base_time + timedelta(days=days_to_add)
 
+    # อัปเดตวันหมดอายุ และเปลี่ยนสถานะ key ในตาราง license_keys
     supabase.table("users").update({"expire_date": new_expire.isoformat()}).eq("username", req.username).execute()
     supabase.table("license_keys").update({"is_used": True, "used_by": req.username}).eq("key_code", req.key_code).execute()
 
