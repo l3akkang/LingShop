@@ -62,14 +62,14 @@ def register(req: RegisterRequest):
             "username": req.username,
             "password_hash": hashed_pwd,
             "hwid": "EMPTY",
-            "expire_date": None  # เริ่มต้นยังไม่มีวันใช้งาน ต้องเติม Key ก่อน
+            "expire_date": None
         }
         supabase.table("users").insert(data).execute()
         return {"success": True, "message": "สมัครสมาชิกสำเร็จ! กรุณาเติม Serial Key ก่อนเข้าใช้งาน"}
     except Exception as e:
         return {"success": False, "message": f"ไม่สามารถสร้างบัญชีได้: {str(e)}"}
 
-# --- 2. ระบบเข้าสู่ระบบ (Login) --- [บล็อกคนไม่มี Key แล้ว!]
+# --- 2. ระบบเข้าสู่ระบบ (Login) ---
 @app.post("/api/login")
 def login(req: LoginRequest):
     if not supabase:
@@ -92,17 +92,14 @@ def login(req: LoginRequest):
 
     user = res.data[0]
 
-    # เช็ครหัสผ่าน
     if user["password_hash"] != hash_password(req.password):
         return {"success": False, "message": "รหัสผ่านไม่ถูกต้อง"}
 
     expire_str = user.get("expire_date")
 
-    # 🔴 [ล็อกบ้าน] ถ้าไม่มีวันหมดอายุ (ยังไม่ได้เติม Key) ห้ามเข้าเด็ดขาด!
     if not expire_str:
-        return {"success": False, "message": "บัญชีนี้ยังไม่ได้เติม Serial Key กรุณาไปที่แท็บ Redeem Key ก่อน"}
+        return {"success": False, "message": "บัญชีนี้ยังไม่ได้เติม Serial Key กรุณาไปที่แท็บ Activate Key ก่อน"}
 
-    # เช็คว่าวันใช้งานหมดอายุหรือยัง
     try:
         expire_dt = datetime.fromisoformat(expire_str.replace("Z", "+00:00"))
         if datetime.now(timezone.utc) > expire_dt:
@@ -110,7 +107,6 @@ def login(req: LoginRequest):
     except Exception:
         return {"success": False, "message": "รูปแบบวันที่ในระบบไม่ถูกต้อง"}
 
-    # เช็ค HWID (ผูกเครื่อง)
     reg_hwid = user.get("hwid")
     if not reg_hwid or reg_hwid in ["EMPTY", "UNKNOWN_DEVICE"]:
         supabase.table("users").update({"hwid": req.hwid}).eq("username", req.username).execute()
@@ -127,7 +123,7 @@ def login(req: LoginRequest):
         "expire_date": user.get("expire_date")
     }
 
-# --- 3. เช็คสถานะ Session (Heartbeat) ---
+# --- 3. เช็คสถานะ Session ---
 @app.post("/api/verify_session")
 def verify_session(req: VerifySessionRequest):
     if not supabase:
@@ -155,7 +151,7 @@ def verify_session(req: VerifySessionRequest):
 
     return {"active": True}
 
-# --- 4. ระบบเติม Serial Key (Redeem) ---
+# --- 4. ระบบเติม Serial Key (Redeem) --- [แก้ชื่อตารางเป็น license_keys แล้ว!]
 @app.post("/api/redeem")
 def redeem_key(req: RedeemRequest):
     if not supabase:
@@ -165,7 +161,8 @@ def redeem_key(req: RedeemRequest):
     if not user_res.data:
         return {"success": False, "message": "ไม่พบ Username นี้ในระบบ"}
 
-    key_res = supabase.table("keys").select("*").eq("key_code", req.key_code).eq("is_used", False).execute()
+    # 🟢 ตรงนี้แก้เป็น license_keys ให้ตรงกับ Supabase แล้ว!
+    key_res = supabase.table("license_keys").select("*").eq("key_code", req.key_code).eq("is_used", False).execute()
     if not key_res.data:
         return {"success": False, "message": "Serial Key ไม่ถูกต้อง หรือถูกใช้งานไปแล้ว"}
 
@@ -186,8 +183,8 @@ def redeem_key(req: RedeemRequest):
 
     new_expire = base_time + timedelta(days=days_to_add)
 
-    # อัปเดตวันหมดอายุ และตัดใช้งาน Key
+    # อัปเดตวันหมดอายุ และเปลี่ยนสถานะ key ในตาราง license_keys
     supabase.table("users").update({"expire_date": new_expire.isoformat()}).eq("username", req.username).execute()
-    supabase.table("keys").update({"is_used": True, "used_by": req.username}).eq("key_code", req.key_code).execute()
+    supabase.table("license_keys").update({"is_used": True, "used_by": req.username}).eq("key_code", req.key_code).execute()
 
     return {"success": True, "message": f"เติม Key สำเร็จ! เพิ่มวันใช้งาน {days_to_add} วัน"}
