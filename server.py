@@ -12,7 +12,6 @@ app = FastAPI()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-# ตัวแปรสำหรับเช็ก Hash ของไฟล์ .exe (ดึงจาก .env)
 EXPECTED_EXE_HASH = os.getenv("EXPECTED_EXE_HASH", "")
 
 try:
@@ -27,7 +26,7 @@ class LoginRequest(BaseModel):
     username: str
     password: str  
     hwid: str
-    exe_hash: str  # รับค่า Hash จากฝั่ง Client
+    exe_hash: str
 
 class RegisterRequest(BaseModel):
     username: str
@@ -52,13 +51,12 @@ def register(req: RegisterRequest):
     if check.data:
         return {"success": False, "message": "ชื่อผู้ใช้นี้ถูกใช้งานแล้ว!"}
 
-    # สมัครใหม่ ตั้งให้หมดอายุทันที (ต้องเติมคีย์ถึงจะใช้งานได้)
     default_expire = datetime.now(timezone.utc)
 
     supabase.table("users").insert(
         {
             "username": req.username,
-            "password_hash": hash_password(req.password), # บันทึกรหัสผ่านที่ Hash แล้ว
+            "password_hash": hash_password(req.password),
             "hwid": "",
             "expire_date": default_expire.isoformat(),
         }
@@ -71,18 +69,18 @@ def login(req: LoginRequest):
     if not supabase:
         raise HTTPException(status_code=500, detail="Database error")
 
-    # === ระบบตรวจสอบ EXE Hash (บังคับตรวจเข้มงวดตลอดเวลา) ===
+    # === ระบบตรวจสอบ EXE Hash ===
     expected_hash = EXPECTED_EXE_HASH.strip().lower()
     client_hash = req.exe_hash.strip().lower()
 
-    # 1. เช็กว่าเซิร์ฟเวอร์ตั้งค่า Hash ใน .env ไว้หรือไม่
+    # 1. เช็กว่าเซิร์ฟเวอร์ตั้งค่า Hash ไว้หรือไม่
     if not expected_hash:
         return {
             "success": False,
-            "message": "ระบบขัดข้อง: เซิร์ฟเวอร์ยังไม่ได้ตั้งค่า EXPECTED_EXE_HASH ใน .env"
+            "message": "ระบบขัดข้อง: เซิร์ฟเวอร์ยังไม่ได้ตั้งค่า EXPECTED_EXE_HASH ใน Environment"
         }
 
-    # 2. บังคับเช็ก Hash แบบตรงเป๊ะ ตรวจสอบตลอดเวลา (ไม่เว้นโหมด Dev)
+    # 2. บังคับเช็ก Hash (ถ้าฝั่ง Client ไม่ตรงกับ Server จะปฏิเสธทันที)
     if client_hash != expected_hash:
         return {
             "success": False, 
@@ -101,11 +99,9 @@ def login(req: LoginRequest):
 
     user = res.data[0]
 
-    # เช็กว่ารหัสผ่านตรงไหม
     if user["password_hash"] != hash_password(req.password):
         return {"success": False, "message": "รหัสผ่านไม่ถูกต้อง!"}
 
-    # เช็กวันหมดอายุ
     expire_str = user.get("expire_date")
     if expire_str:
         try:
@@ -120,7 +116,6 @@ def login(req: LoginRequest):
         except Exception:
             pass
 
-    # บันทึก HWID ใหม่ หรือเช็ก HWID
     reg_hwid = user.get("hwid")
     if not reg_hwid or reg_hwid == "EMPTY":
         supabase.table("users").update({"hwid": req.hwid}).eq(
@@ -138,13 +133,12 @@ def login(req: LoginRequest):
         "expire_date": user.get("expire_date"),
     }
 
-# --- 3. เติมคีย์ (ระบบทบวันใช้งาน) ---
+# --- 3. เติมคีย์ ---
 @app.post("/api/redeem")
 def redeem(req: RedeemRequest):
     if not supabase:
         raise HTTPException(status_code=500, detail="Database error")
 
-    # 1. ตรวจสอบคีย์
     key_res = (
         supabase.table("license_keys")
         .select("*")
@@ -159,7 +153,6 @@ def redeem(req: RedeemRequest):
             "message": "Key ไม่ถูกต้อง หรือถูกใช้งานไปแล้ว",
         }
 
-    # 2. ตรวจสอบผู้ใช้งานเพื่อดึงวันหมดอายุเดิม
     user_res = (
         supabase.table("users")
         .select("expire_date")
@@ -180,7 +173,6 @@ def redeem(req: RedeemRequest):
     now = datetime.now(timezone.utc)
     current_expire_str = user_res.data[0].get("expire_date")
 
-    # 3. คำนวณวันหมดอายุใหม่ (หากยังไม่หมดอายุ ให้ทบวันต่อจากวันเดิม)
     base_date = now
     if current_expire_str:
         try:
@@ -188,13 +180,12 @@ def redeem(req: RedeemRequest):
                 current_expire_str.replace("Z", "+00:00")
             )
             if current_expire > now:
-                base_date = current_expire  # ใช้วันหมดอายุเดิมเป็นจุดเริ่มคำนวณ
+                base_date = current_expire
         except Exception:
             pass
 
     new_expire = base_date + timedelta(days=duration_days)
 
-    # 4. อัปเดตข้อมูลลงฐานข้อมูล
     supabase.table("users").update({"expire_date": new_expire.isoformat()}).eq(
         "username", req.username
     ).execute()
