@@ -20,6 +20,22 @@ try:
 except Exception:
     supabase = None
 
+# --- ชุดคำสั่งลับที่จะส่งให้ Client ตอนล็อกอินผ่านเท่านั้น ---
+CORE_MACRO_LOGIC = """
+def perform_click(win32gui, win32con, win32api, target_hwnd, px, py, event):
+    lParam = win32api.MAKELONG(px, py)
+    if event == 'down':
+        win32gui.PostMessage(target_hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lParam)
+    elif event == 'up':
+        win32gui.PostMessage(target_hwnd, win32con.WM_LBUTTONUP, 0, lParam)
+
+def perform_key(win32gui, win32con, target_hwnd, vk, event):
+    if event == 'down':
+        win32gui.PostMessage(target_hwnd, win32con.WM_KEYDOWN, vk, 0)
+    elif event == 'up':
+        win32gui.PostMessage(target_hwnd, win32con.WM_KEYUP, vk, 0)
+"""
+
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
 
@@ -120,7 +136,8 @@ def login(req: LoginRequest):
         "success": True,
         "message": "เข้าสู่ระบบสำเร็จ",
         "session_token": session_token,
-        "expire_date": user.get("expire_date")
+        "expire_date": user.get("expire_date"),
+        "core_logic": CORE_MACRO_LOGIC
     }
 
 # --- 3. เช็คสถานะ Session ---
@@ -151,7 +168,7 @@ def verify_session(req: VerifySessionRequest):
 
     return {"active": True}
 
-# --- 4. ระบบเติม Serial Key (Redeem) --- [แก้ชื่อตารางเป็น license_keys แล้ว!]
+# --- 4. ระบบเติม Serial Key (Redeem) ---
 @app.post("/api/redeem")
 def redeem_key(req: RedeemRequest):
     if not supabase:
@@ -161,7 +178,6 @@ def redeem_key(req: RedeemRequest):
     if not user_res.data:
         return {"success": False, "message": "ไม่พบ Username นี้ในระบบ"}
 
-    # 🟢 ตรงนี้แก้เป็น license_keys ให้ตรงกับ Supabase แล้ว!
     key_res = supabase.table("license_keys").select("*").eq("key_code", req.key_code).eq("is_used", False).execute()
     if not key_res.data:
         return {"success": False, "message": "Serial Key ไม่ถูกต้อง หรือถูกใช้งานไปแล้ว"}
@@ -183,7 +199,6 @@ def redeem_key(req: RedeemRequest):
 
     new_expire = base_time + timedelta(days=days_to_add)
 
-    # อัปเดตวันหมดอายุ และเปลี่ยนสถานะ key ในตาราง license_keys
     supabase.table("users").update({"expire_date": new_expire.isoformat()}).eq("username", req.username).execute()
     supabase.table("license_keys").update({"is_used": True, "used_by": req.username}).eq("key_code", req.key_code).execute()
 
