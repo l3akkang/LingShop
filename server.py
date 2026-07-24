@@ -1,7 +1,8 @@
 import os
 import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel
 from supabase import Client, create_client
 from dotenv import load_dotenv
@@ -28,63 +29,25 @@ class LoginRequest(BaseModel):
     hwid: str
     exe_hash: str
 
-class RegisterRequest(BaseModel):
+class VerifySessionRequest(BaseModel):
     username: str
-    password: str
+    hwid: str
+    session_token: str
 
-class RedeemRequest(BaseModel):
-    username: str
-    key_code: str
-
-# --- 1. สมัครสมาชิก ---
-@app.post("/api/register")
-def register(req: RegisterRequest):
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Database error")
-
-    check = (
-        supabase.table("users")
-        .select("username")
-        .eq("username", req.username)
-        .execute()
-    )
-    if check.data:
-        return {"success": False, "message": "ชื่อผู้ใช้นี้ถูกใช้งานแล้ว!"}
-
-    default_expire = datetime.now(timezone.utc)
-
-    supabase.table("users").insert(
-        {
-            "username": req.username,
-            "password_hash": hash_password(req.password),
-            "hwid": "",
-            "expire_date": default_expire.isoformat(),
-        }
-    ).execute()
-    return {"success": True, "message": "สมัครสมาชิกสำเร็จ!"}
-
-# --- 2. ล็อกอิน ---
+# --- 1. ระบบยืนยันตัวตนบน Server ---
 @app.post("/api/login")
 def login(req: LoginRequest):
     if not supabase:
-        raise HTTPException(status_code=500, detail="Database error")
+        raise HTTPException(status_code=500, detail="Database connection error")
 
-    # === ระบบตรวจสอบ EXE Hash ===
+    # 1.1 เช็ค Hash โปรแกรมบน Server
     expected_hash = EXPECTED_EXE_HASH.strip().lower()
     client_hash = req.exe_hash.strip().lower()
 
-    print(f"=== HASH DEBUG ===")
-    print(f"Server EXPECTED: [{expected_hash}] (Length: {len(expected_hash)})")
-    print(f"Client RECEIVED: [{client_hash}] (Length: {len(client_hash)})")
-    print(f"==================")
-
-    # ตรวจสอบ Hash (อนุญาต dev_mode_no_hash สำหรับช่วงพัฒนา)
     if expected_hash and client_hash != expected_hash and client_hash != "dev_mode_no_hash":
-        return {
-            "success": False, 
-            "message": "ตรวจพบการดัดแปลงไฟล์โปรแกรม หรือใช้เวอร์ชันเก่า กรุณาดาวน์โหลดใหม่!"
-        }
+        raise HTTPException(status_code=403, detail="Unauthorized client version")
 
+    # 1.2 เช็ค User / Password บน Server
     res = (
         supabase.table("users")
         .select("password_hash", "expire_date", "hwid")
@@ -92,106 +55,65 @@ def login(req: LoginRequest):
         .execute()
     )
     if not res.data:
-        return {"success": False, "message": "ไม่พบชื่อผู้ใช้นี้!"}
+        return {"success": False, "message": "ไม่พบผู้ใช้งานในระบบ"}
 
     user = res.data[0]
 
     if user["password_hash"] != hash_password(req.password):
-        return {"success": False, "message": "รหัสผ่านไม่ถูกต้อง!"}
+        return {"success": False, "message": "รหัสผ่านไม่ถูกต้อง"}
 
+    # 1.3 เช็ค วันหมดอายุ บน Server
     expire_str = user.get("expire_date")
     if expire_str:
         try:
-            expire_dt = datetime.fromisoformat(
-                expire_str.replace("Z", "+00:00")
-            )
+            expire_dt = datetime.fromisoformat(expire_str.replace("Z", "+00:00"))
             if datetime.now(timezone.utc) > expire_dt:
-                return {
-                    "success": False,
-                    "message": "ระยะเวลาการใช้งานของคุณหมดอายุแล้ว!",
-                }
+                return {"success": False, "message": "เวลาการใช้งานของคุณหมดอายุแล้ว"}
         except Exception:
-            pass
+            return {"success": False, "message": "รูปแบบวันที่ไม่ถูกต้อง"}
 
+    # 1.4 เช็ค HWID ล็อคเครื่อง บน Server
     reg_hwid = user.get("hwid")
-    if not reg_hwid or reg_hwid == "EMPTY":
-        supabase.table("users").update({"hwid": req.hwid}).eq(
-            "username", req.username
-        ).execute()
+    if not reg_hwid or reg_hwid in ["EMPTY", "UNKNOWN_DEVICE"]:
+        # ผูกเครื่องแรกเข้ากับบัญชี
+        supabase.table("users").update({"hwid": req.hwid}).eq("username", req.username).execute()
     elif reg_hwid != req.hwid:
-        return {
-            "success": False,
-            "message": "บัญชีนี้ถูกผูกไว้กับเครื่องอื่นแล้ว!",
-        }
+        return {"success": False, "message": "บัญชีนี้ผูกไว้กับเครื่องอื่นแล้ว"}
 
+    # 1.5 สร้าง Session Token คืนให้ Client และอัปเดตลง Supabase
+    session_token = secrets.token_hex(32)
+    supabase.table("users").update({"session_token": session_token}).eq("username", req.username).execute()
+    
     return {
         "success": True,
-        "message": "เข้าสู่ระบบสำเร็จ!",
-        "expire_date": user.get("expire_date"),
+        "message": "เข้าสู่ระบบสำเร็จ",
+        "session_token": session_token,
+        "expire_date": user.get("expire_date")
     }
 
-# --- 3. เติมคีย์ ---
-@app.post("/api/redeem")
-def redeem(req: RedeemRequest):
+# --- 2. เช็คสถานะการทำงานสม่ำเสมอ (Heartbeat Check) ---
+@app.post("/api/verify_session")
+def verify_session(req: VerifySessionRequest):
     if not supabase:
-        raise HTTPException(status_code=500, detail="Database error")
+        return {"active": False}
 
-    key_res = (
-        supabase.table("license_keys")
-        .select("*")
-        .eq("key_code", req.key_code)
-        .eq("is_used", False)
-        .execute()
-    )
-
-    if not key_res.data:
-        return {
-            "success": False,
-            "message": "Key ไม่ถูกต้อง หรือถูกใช้งานไปแล้ว",
-        }
-
-    user_res = (
-        supabase.table("users")
-        .select("expire_date")
-        .eq("username", req.username)
-        .execute()
-    )
-
-    if not user_res.data:
-        return {"success": False, "message": "ไม่พบผู้ใช้นี้ในระบบ"}
-
-    key_info = key_res.data[0]
-    raw_days = key_info.get("days") or key_info.get("duration_days", 1)
-    try:
-        duration_days = int(raw_days)
-    except (ValueError, TypeError):
-        duration_days = 1
-
-    now = datetime.now(timezone.utc)
-    current_expire_str = user_res.data[0].get("expire_date")
-
-    base_date = now
-    if current_expire_str:
+    res = supabase.table("users").select("expire_date", "hwid", "session_token").eq("username", req.username).execute()
+    if not res.data:
+        return {"active": False}
+    
+    user = res.data[0]
+    
+    # เช็ค HWID และ Session Token ตรงกับที่บันทึกไว้ใน DB หรือไม่
+    if user.get("hwid") != req.hwid or user.get("session_token") != req.session_token:
+        return {"active": False}
+        
+    expire_str = user.get("expire_date")
+    if expire_str:
         try:
-            current_expire = datetime.fromisoformat(
-                current_expire_str.replace("Z", "+00:00")
-            )
-            if current_expire > now:
-                base_date = current_expire
+            expire_dt = datetime.fromisoformat(expire_str.replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) > expire_dt:
+                return {"active": False}
         except Exception:
-            pass
+            return {"active": False}
 
-    new_expire = base_date + timedelta(days=duration_days)
-
-    supabase.table("users").update({"expire_date": new_expire.isoformat()}).eq(
-        "username", req.username
-    ).execute()
-
-    supabase.table("license_keys").update(
-        {"is_used": True, "used_by": req.username}
-    ).eq("key_code", req.key_code).execute()
-
-    return {
-        "success": True,
-        "message": f"เติม Key สำเร็จ! เพิ่มวันใช้งาน {duration_days} วัน",
-    }
+    return {"active": True}
