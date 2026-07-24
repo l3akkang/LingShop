@@ -12,7 +12,7 @@ app = FastAPI()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-# เพิ่มตัวแปรสำหรับเช็ก Hash ของไฟล์ .exe (ดึงจาก .env)
+# ตัวแปรสำหรับเช็ก Hash ของไฟล์ .exe (ดึงจาก .env)
 EXPECTED_EXE_HASH = os.getenv("EXPECTED_EXE_HASH", "")
 
 try:
@@ -27,7 +27,7 @@ class LoginRequest(BaseModel):
     username: str
     password: str  
     hwid: str
-    exe_hash: str  # <- เพิ่มบรรทัดนี้เพื่อให้รับค่า Hash จากฝั่ง Client
+    exe_hash: str  # รับค่า Hash จากฝั่ง Client
 
 class RegisterRequest(BaseModel):
     username: str
@@ -71,15 +71,24 @@ def login(req: LoginRequest):
     if not supabase:
         raise HTTPException(status_code=500, detail="Database error")
 
-    # === ระบบตรวจสอบ EXE Hash ===
-    if EXPECTED_EXE_HASH:
-        # ถ้าไม่ได้รันผ่าน Python สดๆ (ไม่ใช่ DEV_MODE) และ Hash ไม่ตรงกัน
-        if req.exe_hash != "DEV_MODE_NO_HASH" and req.exe_hash != EXPECTED_EXE_HASH:
-            return {
-                "success": False, 
-                "message": "ตรวจพบการดัดแปลงไฟล์โปรแกรม หรือใช้เวอร์ชันเก่า กรุณาดาวน์โหลดใหม่!"
-            }
-    # ==========================
+    # === ระบบตรวจสอบ EXE Hash (แบบเข้มงวด) ===
+    expected_hash = EXPECTED_EXE_HASH.strip().lower()
+    client_hash = req.exe_hash.strip().lower()
+
+    # เช็กว่าเซิร์ฟเวอร์ตั้งค่า Hash ไว้หรือไม่
+    if not expected_hash:
+        return {
+            "success": False,
+            "message": "ระบบขัดข้อง: เซิร์ฟเวอร์ยังไม่ได้ตั้งค่า EXPECTED_EXE_HASH ใน .env"
+        }
+
+    # บังคับเช็ก Hash แบบตรงเป๊ะ
+    if client_hash != expected_hash:
+        return {
+            "success": False, 
+            "message": "ตรวจพบการดัดแปลงไฟล์โปรแกรม หรือใช้เวอร์ชันเก่า กรุณาดาวน์โหลดใหม่!"
+        }
+    # ==========================================
 
     res = (
         supabase.table("users")
@@ -92,7 +101,7 @@ def login(req: LoginRequest):
 
     user = res.data[0]
 
-    # เช็กว่ารหัสผ่านตรงไหม โดยเอาที่ส่งมาไป Hash เทียบกับในฐานข้อมูล
+    # เช็กว่ารหัสผ่านตรงไหม
     if user["password_hash"] != hash_password(req.password):
         return {"success": False, "message": "รหัสผ่านไม่ถูกต้อง!"}
 
@@ -150,7 +159,12 @@ def redeem(req: RedeemRequest):
         }
 
     key_info = key_res.data[0]
-    duration_days = key_info.get("days", 1)
+    # รองรับการดึงฟิลด์ 'days' หรือ 'duration_days' พร้อมแปลงเป็น int เพื่อป้องกัน Error
+    raw_days = key_info.get("days") or key_info.get("duration_days", 1)
+    try:
+        duration_days = int(raw_days)
+    except (ValueError, TypeError):
+        duration_days = 1
 
     new_expire = datetime.now(timezone.utc) + timedelta(days=duration_days)
     supabase.table("users").update({"expire_date": new_expire.isoformat()}).eq(
