@@ -73,6 +73,12 @@ def login(req: LoginRequest):
     expected_hash = EXPECTED_EXE_HASH.strip().lower()
     client_hash = req.exe_hash.strip().lower()
 
+    # 👉 ปริ้นท์ค่าออกมาดูใน Log บน Render ทันทีที่กด Login
+    print(f"=== HASH DEBUG ===")
+    print(f"Server EXPECTED: [{expected_hash}] (Length: {len(expected_hash)})")
+    print(f"Client RECEIVED: [{client_hash}] (Length: {len(client_hash)})")
+    print(f"==================")
+
     # 1. เช็กว่าเซิร์ฟเวอร์ตั้งค่า Hash ไว้หรือไม่
     if not expected_hash:
         return {
