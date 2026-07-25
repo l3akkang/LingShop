@@ -6,9 +6,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from supabase import Client, create_client
 from dotenv import load_dotenv
-import marshal
-import base64
-from cryptography.fernet import Fernet # 🚨 เพิ่ม Import ตัวนี้เข้ามา
+from cryptography.fernet import Fernet # 🚨 สำหรับเข้ารหัสโค้ดส่งให้ Client
 
 load_dotenv()
 
@@ -32,16 +30,18 @@ def perform_click(win32gui, win32con, win32api, target_hwnd, px, py, event):
     elif event == 'up':
         win32gui.PostMessage(target_hwnd, win32con.WM_LBUTTONUP, 0, lParam)
 
-def perform_key(win32gui, win32con, target_hwnd, vk, event):
+def perform_key(win32gui, win32con, win32api, target_hwnd, vk, event):
+    scan_code = win32api.MapVirtualKey(vk, 0)
     if event == 'down':
-        win32gui.PostMessage(target_hwnd, win32con.WM_KEYDOWN, vk, 0)
+        win32gui.PostMessage(target_hwnd, win32con.WM_KEYDOWN, vk, 1 | (scan_code << 16))
     elif event == 'up':
-        win32gui.PostMessage(target_hwnd, win32con.WM_KEYUP, vk, 0)
+        win32gui.PostMessage(target_hwnd, win32con.WM_KEYUP, vk, 1 | (scan_code << 16) | (1 << 30) | (1 << 31))
 """
 
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
 
+# --- Pydantic Models ---
 class LoginRequest(BaseModel):
     username: str
     password: str  
@@ -136,14 +136,15 @@ def login(req: LoginRequest):
     elif reg_hwid != req.hwid:
         return {"success": False, "message": "บัญชีนี้ผูกไว้กับเครื่องอื่นแล้ว"}
 
+    # สร้าง Session Token ใหม่เมื่อล็อกอินสำเร็จ
     session_token = secrets.token_hex(32)
     supabase.table("users").update({"session_token": session_token}).eq("username", req.username).execute()
     
-    # 🚨 สร้างกุญแจสุ่มเฉพาะกิจสำหรับรอบล็อกอินนี้เท่านั้น
+    # สร้างกุญแจสุ่ม (Fernet Key) เฉพาะกิจสำหรับรอบล็อกอินนี้เท่านั้น
     dynamic_payload_key = Fernet.generate_key()
     cipher_suite = Fernet(dynamic_payload_key)
     
-    # 🚨 เอา Text โค้ดดิบๆ มาเข้ารหัสเลย ไม่ต้องผ่าน marshal
+    # เข้ารหัสโค้ด CORE_MACRO_LOGIC
     encrypted_logic = cipher_suite.encrypt(CORE_MACRO_LOGIC.encode('utf-8')).decode('utf-8')
     
     return {
@@ -151,11 +152,11 @@ def login(req: LoginRequest):
         "message": "เข้าสู่ระบบสำเร็จ",
         "session_token": session_token,
         "expire_date": user.get("expire_date"),
-        "payload_key": dynamic_payload_key.decode('utf-8'), # ส่งกุญแจสุ่มไปให้ Client
+        "payload_key": dynamic_payload_key.decode('utf-8'), # ส่งกุญแจไปให้ Client
         "core_logic": encrypted_logic # ส่งโค้ดที่ถูกเข้ารหัสแล้วไป
     }
 
-# --- 3. เช็คสถานะ Session ---
+# --- 3. เช็คสถานะ Session (Heartbeat) ---
 @app.post("/api/verify_session")
 def verify_session(req: VerifySessionRequest):
     if not supabase:
@@ -167,6 +168,7 @@ def verify_session(req: VerifySessionRequest):
     
     user = res.data[0]
     
+    # ตรวจสอบ HWID และ Session Token ว่าตรงกับใน Database หรือไม่
     if user.get("hwid") != req.hwid or user.get("session_token") != req.session_token:
         return {"active": False}
         
