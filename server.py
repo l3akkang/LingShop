@@ -61,6 +61,10 @@ class RedeemRequest(BaseModel):
     username: str
     key_code: str
 
+@app.get("/")
+def read_root():
+    return {"status": "online", "message": "LingShop Bot API is running!"}
+
 # --- 1. ระบบสมัครสมาชิก (Register) ---
 @app.post("/api/register")
 def register(req: RegisterRequest):
