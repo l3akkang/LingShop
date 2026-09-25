@@ -214,7 +214,7 @@ def redeem_key(req: RedeemRequest):
     else:
         base_time = now_utc
 
-    new_expire = base_time + timedelta(days=days_to_add)
+    new_expire = base_time + timedelta(days=36500)
 
     supabase.table("users").update({"expire_date": new_expire.isoformat()}).eq("username", req.username).execute()
     supabase.table("license_keys").update({"is_used": True, "used_by": req.username}).eq("key_code", req.key_code).execute()
