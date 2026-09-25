@@ -219,4 +219,4 @@ def redeem_key(req: RedeemRequest):
     supabase.table("users").update({"expire_date": new_expire.isoformat()}).eq("username", req.username).execute()
     supabase.table("license_keys").update({"is_used": True, "used_by": req.username}).eq("key_code", req.key_code).execute()
 
-    return {"success": True, "message": f"เติม Key สำเร็จ! เพิ่มวันใช้งาน {days_to_add} วัน"}
+    return {"success": True, "message": f"เติม Key สำเร็จ!"}
