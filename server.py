@@ -15,6 +15,7 @@ app = FastAPI()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 EXPECTED_EXE_HASH = os.getenv("EXPECTED_EXE_HASH", "")
+EXPECTED_EXE_HASH_2 = os.getenv("EXPECTED_EXE_HASH_2", "")
 
 try:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -98,10 +99,14 @@ def login(req: LoginRequest):
     if not supabase:
         raise HTTPException(status_code=500, detail="Database connection error")
 
-    expected_hash = EXPECTED_EXE_HASH.strip().lower()
+    allowed_hashes = {
+        h.strip().lower()
+        for h in (EXPECTED_EXE_HASH, EXPECTED_EXE_HASH_2)
+        if h and h.strip()
+    }
     client_hash = req.exe_hash.strip().lower()
 
-    if expected_hash and client_hash != expected_hash:
+    if allowed_hashes and client_hash not in allowed_hashes:
         return {"success": False, "message": "เวอร์ชันโปรแกรมไม่ถูกต้อง กรุณาอัปเดต"}
 
     res = (
